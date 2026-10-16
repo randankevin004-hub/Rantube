@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 5878)
-Total output lines: 498
-
 package com.rantube.app
 
 import android.app.DownloadManager
@@ -233,7 +230,70 @@ private fun HomeScreen(onImport: () -> Unit, onLink: () -> Unit, onLibrary: () -
                 }
                 Spacer(Modifier.width(11.dp))
                 Column {
-…878 tokens truncated…{
+                    Text("RANTUBE", color = Color.White, fontWeight = FontWeight.Black, letterSpacing = 2.sp, fontSize = 18.sp)
+                    Text("YOUR MEDIA SPACE", color = Muted, fontSize = 10.sp, letterSpacing = 1.5.sp)
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(28.dp)) {
+                Column(Modifier.fillMaxWidth().padding(22.dp)) {
+                    Text("Keep what\nyou love.", color = Color.White, fontSize = 34.sp, lineHeight = 38.sp, fontWeight = FontWeight.ExtraBold)
+                    Spacer(Modifier.height(10.dp))
+                    Text("A calmer place for your own media, saved links, and listening queue.", color = Muted, fontSize = 15.sp, lineHeight = 22.sp)
+                    Spacer(Modifier.height(18.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(onClick = onImport, colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)) {
+                            Text("＋  Add media", fontWeight = FontWeight.Bold)
+                        }
+                        TextButton(onClick = onLink) { Text("Paste link", color = Mint) }
+                    }
+                }
+            }
+        }
+        item {
+            Text("YOUR SPACE", color = Muted, fontSize = 11.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.Bold)
+        }
+        item { FeatureCard("▤", "Media library", "Browse and play files you choose from your device.", onLibrary) }
+        item { FeatureCard("↓", "Download queue", "Track direct media links saved for offline use.", onDownloads) }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF17372F)), shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("Made for your media", color = Mint, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(5.dp))
+                    Text("Rantube works with files and direct links you’re allowed to save. It doesn’t unlock protected streams.", color = Color(0xFFC7D8D2), fontSize = 13.sp, lineHeight = 19.sp)
+                }
+            }
+        }
+        item { Spacer(Modifier.height(10.dp)) }
+    }
+}
+
+@Composable
+private fun FeatureCard(mark: String, title: String, subtitle: String, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(46.dp).background(Color(0xFF253843), RoundedCornerShape(15.dp)), contentAlignment = Alignment.Center) {
+                Text(mark, color = Mint, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Spacer(Modifier.height(3.dp))
+                Text(subtitle, color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+            }
+            Text("›", color = Muted, fontSize = 28.sp)
+        }
+    }
+}
+
+@Composable
+private fun DownloadsScreen(downloads: List<DownloadEntry>) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         ScreenHeading("Downloads", "Direct links saved on this device")
         if (downloads.isEmpty()) EmptyState("Nothing in the queue yet", "Paste a direct media URL from Home to add a download.")
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -412,27 +472,3 @@ private fun refreshDownloads(context: Context, prefs: android.content.SharedPref
                 DownloadManager.STATUS_RUNNING -> "Downloading"
                 DownloadManager.STATUS_PAUSED -> "Paused"
                 DownloadManager.STATUS_SUCCESSFUL -> "Complete"
-                DownloadManager.STATUS_FAILED -> "Failed"
-                else -> "Queued"
-            }
-            DownloadEntry(id, title, status, if (total > 0) ((soFar * 100) / total).toInt() else -1)
-        } catch (_: Exception) {
-            null
-        } finally {
-            cursor?.close()
-        }
-    }
-    output.clear()
-    output.addAll(current)
-}
-
-private fun Context.displayName(uri: Uri): String {
-    contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) {
-            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (index >= 0) cursor.getString(index)?.let { return it }
-        }
-    }
-    return uri.lastPathSegment?.substringAfterLast('/') ?: "Selected media"
-}
-
