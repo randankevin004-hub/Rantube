@@ -472,3 +472,27 @@ private fun refreshDownloads(context: Context, prefs: android.content.SharedPref
                 DownloadManager.STATUS_RUNNING -> "Downloading"
                 DownloadManager.STATUS_PAUSED -> "Paused"
                 DownloadManager.STATUS_SUCCESSFUL -> "Complete"
+                DownloadManager.STATUS_FAILED -> "Failed"
+                else -> "Queued"
+            }
+            DownloadEntry(id, title, status, if (total > 0) ((soFar * 100) / total).toInt() else -1)
+        } catch (_: Exception) {
+            null
+        } finally {
+            cursor?.close()
+        }
+    }
+    output.clear()
+    output.addAll(current)
+}
+
+private fun Context.displayName(uri: Uri): String {
+    contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) {
+            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (index >= 0) cursor.getString(index)?.let { return it }
+        }
+    }
+    return uri.lastPathSegment?.substringAfterLast('/') ?: "Selected media"
+}
+
