@@ -24,10 +24,17 @@ jobs:
           distribution: temurin
           java-version: '25'
           cache: gradle
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - name: Install Android SDK packages
+        run: |
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          sdkmanager="$sdk_root/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            sdkmanager="$(find "$sdk_root/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          set +o pipefail
+          yes | "$sdkmanager" --licenses
+          set -o pipefail
+          "$sdkmanager" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
       - name: Build APK
         run: |
           chmod +x gradlew
