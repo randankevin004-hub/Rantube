@@ -1,0 +1,9 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+site/downloads/*.apk
+.android-user/
+outputs/
+work/
+
