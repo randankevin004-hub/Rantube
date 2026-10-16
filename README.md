@@ -15,7 +15,7 @@ Rantube accepts direct file URLs you have permission to save. It does not extrac
 
 ## Build the app
 
-Open this folder in Android Studio with Android SDK 37 installed, then run the `app` configuration on a device or emulator. The project pins Android Gradle Plugin 9.4.1, Gradle 9.6.0, Compose BOM 2026.09.00, and Media3 1.11.1.
+Open this folder in Android Studio with Android SDK 36 installed, then run the `app` configuration on a device or emulator. The project pins Android Gradle Plugin 9.4.1, Gradle 9.6.0, Compose BOM 2026.09.00, and Media3 1.11.1.
 
 From a terminal with JDK 17 or newer and Android SDK 37 installed, build a debug APK with:
 
