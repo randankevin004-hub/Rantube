@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.rantube.app"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.rantube.app"
