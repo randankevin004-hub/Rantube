@@ -3,6 +3,7 @@ package com.rantube.app
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
+import android.content.ClipboardManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
@@ -105,7 +106,6 @@ private fun RantubeApp() {
     } }
     val downloads = remember { mutableStateListOf<DownloadEntry>() }
     var tab by remember { mutableStateOf(AppTab.Home) }
-    var linkDialog by remember { mutableStateOf(false) }
     var linkText by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<MediaEntry?>(null) }
@@ -151,7 +151,21 @@ private fun RantubeApp() {
                     )
                     tab == AppTab.Home -> HomeScreen(
                         onImport = { mediaPicker.launch(arrayOf("video/*", "audio/*")) },
-                        onLink = { linkText = ""; linkDialog = true },
+                        linkText = linkText,
+                        onLinkTextChange = { linkText = it },
+                        onPaste = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)
+                                ?.toString()?.let { linkText = it }
+                        },
+                        onDownload = {
+                            val result = enqueueDirectDownload(context, prefs, linkText)
+                            message = result
+                            if (result.startsWith("Download added")) {
+                                linkText = ""
+                                tab = AppTab.Downloads
+                            }
+                        },
                         onLibrary = { tab = AppTab.Library },
                         onDownloads = { tab = AppTab.Downloads }
                     )
@@ -172,39 +186,6 @@ private fun RantubeApp() {
         }
     }
 
-    if (linkDialog) {
-        AlertDialog(
-            onDismissRequest = { linkDialog = false },
-            containerColor = Panel,
-            title = { Text("Save a media link", color = Color.White, fontWeight = FontWeight.Bold) },
-            text = {
-                Column {
-                    Text("Paste a direct audio or video file URL you have permission to save.", color = Muted)
-                    Spacer(Modifier.height(14.dp))
-                    OutlinedTextField(
-                        value = linkText,
-                        onValueChange = { linkText = it },
-                        placeholder = { Text("https://example.com/video.mp4") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        colors = fieldColors(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    val result = enqueueDirectDownload(context, prefs, linkText)
-                    message = result
-                    if (result.startsWith("Download added")) linkDialog = false
-                }, colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)) {
-                    Text("Add download", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = { TextButton(onClick = { linkDialog = false }) { Text("Cancel", color = Muted) } }
-        )
-    }
-
     message?.let { text ->
         AlertDialog(
             onDismissRequest = { message = null },
@@ -217,7 +198,15 @@ private fun RantubeApp() {
 }
 
 @Composable
-private fun HomeScreen(onImport: () -> Unit, onLink: () -> Unit, onLibrary: () -> Unit, onDownloads: () -> Unit) {
+private fun HomeScreen(
+    linkText: String,
+    onLinkTextChange: (String) -> Unit,
+    onPaste: () -> Unit,
+    onDownload: () -> Unit,
+    onImport: () -> Unit,
+    onLibrary: () -> Unit,
+    onDownloads: () -> Unit
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -242,14 +231,36 @@ private fun HomeScreen(onImport: () -> Unit, onLink: () -> Unit, onLibrary: () -
                     Spacer(Modifier.height(10.dp))
                     Text("A calmer place for your own media, saved links, and listening queue.", color = Muted, fontSize = 15.sp, lineHeight = 22.sp)
                     Spacer(Modifier.height(18.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = onImport, colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)) {
-                            Text("＋  Add media", fontWeight = FontWeight.Bold)
-                        }
-                        TextButton(onClick = onLink) { Text("Paste link", color = Mint) }
-                    }
                 }
             }
+        }
+        item {
+            Text("DOWNLOAD A DIRECT MEDIA LINK", color = Muted, fontSize = 11.sp, letterSpacing = 1.4.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = linkText,
+                onValueChange = onLinkTextChange,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Paste a video or audio link") },
+                leadingIcon = { Text("↗", color = Mint, fontSize = 20.sp) },
+                trailingIcon = { TextButton(onClick = onPaste) { Text("Paste", color = Mint) } },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                colors = fieldColors()
+            )
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = onDownload,
+                enabled = linkText.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)
+            ) {
+                Text("↓  Download original file", fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text("Direct file links keep their source quality. Rantube doesn’t extract protected streams.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = onImport) { Text("＋  Choose files from this device", color = Mint) }
         }
         item {
             Text("YOUR SPACE", color = Muted, fontSize = 11.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.Bold)
