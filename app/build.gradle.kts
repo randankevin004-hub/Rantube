@@ -11,8 +11,8 @@ android {
         applicationId = "com.rantube.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
         ndk {
             abiFilters += if (providers.gradleProperty("phoneOnly").orNull == "true") {
                 listOf("arm64-v8a")
@@ -48,3 +48,4 @@ dependencies {
     implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
 }
+
