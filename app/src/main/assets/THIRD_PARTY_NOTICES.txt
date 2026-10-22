@@ -1,0 +1,13 @@
+Rantube third-party notices
+
+Rantube includes youtubedl-android 0.18.1, an Android wrapper for yt-dlp, and its FFmpeg runtime.
+The wrapper is distributed under GNU General Public License version 3. The complete GPL-3.0 text
+is in LICENSE.txt in this directory and in the Rantube source repository.
+
+Project and source: https://github.com/yausername/youtubedl-android
+yt-dlp project: https://github.com/yt-dlp/yt-dlp
+FFmpeg project: https://ffmpeg.org/
+
+Rantube source code: https://github.com/randankevin004-hub/Rantube
+Rantube is distributed under GPL-3.0-only. The corresponding source code is available at the
+Rantube source URL above.

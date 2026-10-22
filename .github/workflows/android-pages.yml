@@ -38,7 +38,7 @@ jobs:
       - name: Build APK
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon :app:assembleDebug
+          ./gradlew --no-daemon -PphoneOnly=true :app:assembleDebug
       - name: Prepare download page
         run: |
           mkdir -p site/downloads
@@ -63,4 +63,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-

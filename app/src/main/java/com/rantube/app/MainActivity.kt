@@ -1,10 +1,8 @@
 package com.rantube.app
 
-import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.content.ClipboardManager
-import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -14,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +40,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -71,8 +71,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem as PlayerMediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
-import kotlinx.coroutines.delay
-import java.net.URLDecoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
+import com.yausername.ffmpeg.FFmpeg
+import java.io.File
+import java.util.UUID
 
 private val Ink = Color(0xFF101923)
 private val Panel = Color(0xFF182430)
@@ -86,13 +92,14 @@ private enum class AppTab(val label: String, val mark: String) {
 
 private data class MediaEntry(val uri: String, val title: String)
 private data class DownloadEntry(
-    val id: Long,
+    val id: String,
     val title: String,
     val status: String,
     val progress: Int,
-    val mimeType: String?,
-    val failureReason: String?
+    val filePath: String?,
+    val failureReason: String? = null
 )
+private data class DownloadFormat(val label: String, val selector: String, val audioOnly: Boolean = false)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -105,6 +112,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun RantubeApp() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("rantube", Context.MODE_PRIVATE) }
     val library = remember { mutableStateListOf<MediaEntry>().apply {
         prefs.getStringSet("library", emptySet()).orEmpty().forEach { saved ->
@@ -112,9 +120,18 @@ private fun RantubeApp() {
             if (parts.size == 2) add(MediaEntry(parts[0], parts[1]))
         }
     } }
-    val downloads = remember { mutableStateListOf<DownloadEntry>() }
+    val downloads = remember { mutableStateListOf<DownloadEntry>().apply { addAll(scanDownloadedFiles()) } }
+    var engineReady by remember { mutableStateOf(false) }
+    var engineError by remember { mutableStateOf<String?>(null) }
+    var engineAttempt by remember { mutableStateOf(0) }
     var tab by remember { mutableStateOf(AppTab.Home) }
     var linkText by remember { mutableStateOf("") }
+    var mediaTitle by remember { mutableStateOf("") }
+    var availableFormats by remember { mutableStateOf<List<DownloadFormat>>(emptyList()) }
+    var selectedFormat by remember { mutableStateOf(DownloadFormat("Best available", "bestvideo+bestaudio/best")) }
+    var inspecting by remember { mutableStateOf(false) }
+    var downloading by remember { mutableStateOf(false) }
+    var extractionError by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<MediaEntry?>(null) }
     var search by remember { mutableStateOf("") }
@@ -130,10 +147,127 @@ private fun RantubeApp() {
         prefs.edit().putStringSet("library", library.map { "${it.uri}|${it.title}" }.toSet()).apply()
     }
 
-    LaunchedEffect(downloads.size, tab) {
-        while (true) {
-            refreshDownloads(context, prefs, downloads)
-            delay(1500)
+    LaunchedEffect(engineAttempt) {
+        engineError = null
+        engineReady = false
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val downloader = YoutubeDL.getInstance()
+                downloader.init(context.applicationContext)
+                FFmpeg.getInstance().init(context.applicationContext)
+                val lastExtractorCheck = prefs.getLong("yt_dlp_update_check", 0L)
+                if (System.currentTimeMillis() - lastExtractorCheck > 7L * 24 * 60 * 60 * 1000) {
+                    runCatching { downloader.updateYoutubeDL(context.applicationContext) }
+                        .onSuccess { prefs.edit().putLong("yt_dlp_update_check", System.currentTimeMillis()).apply() }
+                }
+            }
+        }.onSuccess { engineReady = true }
+            .onFailure { engineError = it.message ?: "The download engine could not start." }
+    }
+
+    fun inspectMedia() {
+        val url = linkText.trim()
+        val uri = runCatching { Uri.parse(url) }.getOrNull()
+        if (uri?.scheme !in setOf("https", "http") || uri?.host.isNullOrBlank()) {
+            extractionError = "Paste a full http or https media-page link first."
+            return
+        }
+        inspecting = true
+        extractionError = null
+        availableFormats = emptyList()
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val request = YoutubeDLRequest(url).apply { addOption("--no-playlist") }
+                    YoutubeDL.getInstance().getInfo(request)
+                }
+            }.onSuccess { info ->
+                mediaTitle = info.title?.takeIf { it.isNotBlank() } ?: "Media download"
+                val heights = info.formats.orEmpty()
+                    .filter { it.height > 0 && it.vcodec != null && it.vcodec != "none" }
+                    .map { it.height }
+                    .distinct()
+                    .sortedDescending()
+                availableFormats = buildList {
+                    add(DownloadFormat("Best available", "bestvideo+bestaudio/best"))
+                    heights.forEach { height ->
+                        add(DownloadFormat("Up to ${height}p", "bestvideo[height<=$height]+bestaudio/best[height<=$height]"))
+                    }
+                    add(DownloadFormat("Audio only · MP3", "bestaudio/best", audioOnly = true))
+                }
+                selectedFormat = availableFormats.first()
+                if (heights.isEmpty()) extractionError = "The page was read, but yt-dlp did not report selectable video formats. Try another public media link."
+            }.onFailure { error ->
+                extractionError = error.message?.lineSequence()?.firstOrNull()?.take(220)
+                    ?: "Couldn’t read formats from this link. The page may require sign-in or may not be supported."
+            }
+            inspecting = false
+        }
+    }
+
+    fun startDownload() {
+        val url = linkText.trim()
+        if (availableFormats.isEmpty()) {
+            extractionError = "Check the link first so Rantube can show its available formats."
+            return
+        }
+        val downloadId = UUID.randomUUID().toString()
+        val title = mediaTitle.ifBlank { "Media download" }
+        val format = selectedFormat
+        val folder = downloadDirectory()
+        val safeName = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(120).ifBlank { "Rantube media" }
+        val outputTemplate = File(folder, "$safeName [%(id)s].%(ext)s").absolutePath
+        downloads.add(0, DownloadEntry(downloadId, title, "Starting", -1, null))
+        downloading = true
+        extractionError = null
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    folder.mkdirs()
+                    val request = YoutubeDLRequest(url).apply {
+                        addOption("--no-playlist")
+                        addOption("--newline")
+                        addOption("--no-part")
+                        if (!format.audioOnly) addOption("--merge-output-format", "mp4")
+                        addOption("-f", format.selector)
+                        addOption("-o", outputTemplate)
+                        addOption("--print", "after_move:filepath")
+                        if (format.audioOnly) {
+                            addOption("-x")
+                            addOption("--audio-format", "mp3")
+                        }
+                    }
+                    YoutubeDL.getInstance().execute(request, downloadId) { percent, _, _ ->
+                        val progress = percent.toInt().coerceIn(0, 100)
+                        scope.launch(Dispatchers.Main) {
+                            updateDownload(downloads, downloadId) { it.copy(status = "Downloading", progress = progress) }
+                        }
+                    }
+                }
+            }.onSuccess { response ->
+                val printedPath = response.out.lineSequence().map { it.trim() }
+                    .lastOrNull { it.isNotBlank() && File(it).isFile }
+                val downloaded = printedPath?.let(::File) ?: folder.listFiles()
+                    ?.filter { it.isFile && it.name.startsWith("$safeName [") }
+                    ?.maxByOrNull { it.lastModified() }
+                if (downloaded != null && downloaded.length() > 0) {
+                    updateDownload(downloads, downloadId) {
+                        it.copy(status = "Complete", progress = 100, filePath = downloaded.absolutePath)
+                    }
+                } else {
+                    updateDownload(downloads, downloadId) {
+                        it.copy(status = "Failed", failureReason = "yt-dlp finished, but Rantube could not find a saved media file. See the download log and try again.")
+                    }
+                }
+                linkText = ""
+                tab = AppTab.Downloads
+            }.onFailure { error ->
+                val detail = error.message?.lineSequence()?.lastOrNull()?.take(220)
+                    ?: "The link could not be downloaded. It may require a login or be unavailable."
+                updateDownload(downloads, downloadId) { it.copy(status = "Failed", failureReason = detail) }
+                extractionError = detail
+            }
+            downloading = false
         }
     }
 
@@ -145,6 +279,11 @@ private fun RantubeApp() {
         onBackground = Color.White,
         onSurface = Color.White
     )) {
+        if (!engineReady) {
+            EngineLoadingScreen(error = engineError, onRetry = { engineAttempt++ })
+            return@MaterialTheme
+        }
+
         Scaffold(
             containerColor = Canvas,
             bottomBar = {
@@ -166,14 +305,15 @@ private fun RantubeApp() {
                             clipboard?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)
                                 ?.toString()?.let { linkText = it }
                         },
-                        onDownload = {
-                            val result = enqueueDirectDownload(context, prefs, linkText)
-                            message = result
-                            if (result.startsWith("Download added")) {
-                                linkText = ""
-                                tab = AppTab.Downloads
-                            }
-                        },
+                        mediaTitle = mediaTitle,
+                        formats = availableFormats,
+                        selectedFormat = selectedFormat,
+                        inspecting = inspecting,
+                        downloading = downloading,
+                        extractionError = extractionError,
+                        onInspect = ::inspectMedia,
+                        onSelectFormat = { selectedFormat = it },
+                        onDownload = ::startDownload,
                         onShareWebsite = { shareText(context, "Share Rantube", "Try Rantube: https://randankevin004-hub.github.io/Rantube/") },
                         onShareRepository = { shareText(context, "Share Rantube source", "Rantube source code: https://github.com/randankevin004-hub/Rantube") },
                         onLibrary = { tab = AppTab.Library },
@@ -182,10 +322,10 @@ private fun RantubeApp() {
                     tab == AppTab.Downloads -> DownloadsScreen(
                         downloads = downloads,
                         onOpen = { item ->
-                            openDownloadedFile(context, item.id)?.let { message = it }
+                            item.filePath?.let { openDownloadedFile(context, File(it)) }?.let { message = it }
                         },
                         onShare = { item ->
-                            shareDownloadedFile(context, item.id)?.let { message = it }
+                            item.filePath?.let { shareDownloadedFile(context, File(it)) }?.let { message = it }
                         }
                     )
                     else -> LibraryScreen(
@@ -220,6 +360,14 @@ private fun HomeScreen(
     linkText: String,
     onLinkTextChange: (String) -> Unit,
     onPaste: () -> Unit,
+    mediaTitle: String,
+    formats: List<DownloadFormat>,
+    selectedFormat: DownloadFormat,
+    inspecting: Boolean,
+    downloading: Boolean,
+    extractionError: String?,
+    onInspect: () -> Unit,
+    onSelectFormat: (DownloadFormat) -> Unit,
     onDownload: () -> Unit,
     onShareWebsite: () -> Unit,
     onShareRepository: () -> Unit,
@@ -227,6 +375,7 @@ private fun HomeScreen(
     onLibrary: () -> Unit,
     onDownloads: () -> Unit
 ) {
+    var showFormats by remember { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -255,13 +404,13 @@ private fun HomeScreen(
             }
         }
         item {
-            Text("DOWNLOAD A DIRECT MEDIA LINK", color = Muted, fontSize = 11.sp, letterSpacing = 1.4.sp, fontWeight = FontWeight.Bold)
+            Text("DOWNLOAD A MEDIA PAGE OR FILE", color = Muted, fontSize = 11.sp, letterSpacing = 1.4.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = linkText,
                 onValueChange = onLinkTextChange,
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Paste a video or audio link") },
+                placeholder = { Text("Paste an Instagram, video, or file link") },
                 leadingIcon = { Text("↗", color = Mint, fontSize = 20.sp) },
                 trailingIcon = { TextButton(onClick = onPaste) { Text("Paste", color = Mint) } },
                 singleLine = true,
@@ -271,15 +420,43 @@ private fun HomeScreen(
             )
             Spacer(Modifier.height(10.dp))
             Button(
-                onClick = onDownload,
-                enabled = linkText.isNotBlank(),
+                onClick = onInspect,
+                enabled = linkText.isNotBlank() && !inspecting && !downloading,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)
             ) {
-                Text("↓  Download original file", fontWeight = FontWeight.Bold)
+                if (inspecting) CircularProgressIndicator(Modifier.size(18.dp), color = Ink, strokeWidth = 2.dp)
+                else Text("Check available formats", fontWeight = FontWeight.Bold)
+            }
+            if (formats.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF202F38)), shape = RoundedCornerShape(18.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Text(mediaTitle, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(3.dp))
+                        Text("${formats.size} download options found", color = Muted, fontSize = 12.sp)
+                        Spacer(Modifier.height(8.dp))
+                        TextButton(onClick = { showFormats = true }) {
+                            Text("Format: ${selectedFormat.label}  ·  Change", color = Mint)
+                        }
+                        Button(
+                            onClick = onDownload,
+                            enabled = !downloading,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)
+                        ) {
+                            if (downloading) CircularProgressIndicator(Modifier.size(18.dp), color = Ink, strokeWidth = 2.dp)
+                            else Text("↓  Download ${selectedFormat.label}", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+            extractionError?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = Color(0xFFFFA6A6), fontSize = 12.sp, lineHeight = 18.sp)
             }
             Spacer(Modifier.height(6.dp))
-            Text("Direct file links keep their source quality. Rantube doesn’t extract protected streams.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+            Text("Rantube reads formats provided by the page’s extractor. It can’t access DRM-protected streams or content requiring unavailable sign-in.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
             Spacer(Modifier.height(4.dp))
             TextButton(onClick = onImport) { Text("＋  Choose files from this device", color = Mint) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -291,7 +468,7 @@ private fun HomeScreen(
             Text("YOUR SPACE", color = Muted, fontSize = 11.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.Bold)
         }
         item { FeatureCard("▤", "Media library", "Browse and play files you choose from your device.", onLibrary) }
-        item { FeatureCard("↓", "Download queue", "Track direct media links saved for offline use.", onDownloads) }
+        item { FeatureCard("↓", "Download queue", "Track extracted media and check completed files.", onDownloads) }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF17372F)), shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(18.dp)) {
@@ -302,6 +479,31 @@ private fun HomeScreen(
             }
         }
         item { Spacer(Modifier.height(10.dp)) }
+    }
+
+    if (showFormats) {
+        AlertDialog(
+            onDismissRequest = { showFormats = false },
+            containerColor = Panel,
+            title = { Text("Choose a format", color = Color.White) },
+            text = {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(formats, key = { it.label }) { format ->
+                        TextButton(
+                            onClick = { onSelectFormat(format); showFormats = false },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (selectedFormat == format) "✓  ${format.label}" else format.label,
+                                color = if (selectedFormat == format) Mint else Color.White,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showFormats = false }) { Text("Close", color = Mint) } }
+        )
     }
 }
 
@@ -335,7 +537,7 @@ private fun DownloadsScreen(
 ) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         ScreenHeading("Downloads", "Files are saved in Downloads/Rantube")
-        if (downloads.isEmpty()) EmptyState("Nothing in the queue yet", "Paste a direct media URL from Home to add a download.")
+        if (downloads.isEmpty()) EmptyState("Nothing in the queue yet", "Paste a media page or file link on Home and check its formats.")
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(downloads, key = { it.id }) { item ->
                 Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(16.dp)) {
@@ -346,7 +548,6 @@ private fun DownloadsScreen(
                             buildString {
                                 append(item.status)
                                 if (item.progress in 0..99) append(" · ${item.progress}%")
-                                item.mimeType?.let { append(" · $it") }
                             },
                             color = if (item.status.startsWith("Failed") || item.status.startsWith("Link page")) Color(0xFFFFA6A6) else Muted,
                             fontSize = 13.sp
@@ -355,7 +556,7 @@ private fun DownloadsScreen(
                             Spacer(Modifier.height(4.dp))
                             Text(item.failureReason, color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
                         }
-                        if (item.status == "Waiting" || item.status == "Downloading" || item.status == "Paused") {
+                        if (item.status == "Starting" || item.status == "Extracting" || item.status == "Downloading") {
                             Spacer(Modifier.height(10.dp))
                             if (item.progress >= 0) {
                                 LinearProgressIndicator(
@@ -484,6 +685,38 @@ private fun EmptyState(title: String, subtitle: String) {
 }
 
 @Composable
+private fun EngineLoadingScreen(error: String?, onRetry: () -> Unit) {
+    Surface(Modifier.fillMaxSize(), color = Canvas) {
+        Column(
+            Modifier.fillMaxSize().padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Box(Modifier.size(76.dp).background(Mint, RoundedCornerShape(26.dp)), contentAlignment = Alignment.Center) {
+                Text("↓", color = Ink, fontSize = 48.sp, fontWeight = FontWeight.Black)
+            }
+            Spacer(Modifier.height(18.dp))
+            Text("RANTUBE", color = Color.White, fontWeight = FontWeight.Black, letterSpacing = 3.sp, fontSize = 23.sp)
+            Spacer(Modifier.height(8.dp))
+            if (error == null) {
+                CircularProgressIndicator(color = Mint, modifier = Modifier.padding(16.dp))
+                Text("Getting the download engine ready…", color = Muted, fontSize = 14.sp)
+                Text("This can take a little longer the first time.", color = Muted, fontSize = 12.sp)
+            } else {
+                Spacer(Modifier.height(12.dp))
+                Text("The download engine could not start", color = Color.White, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text(error, color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)) {
+                    Text("Try again", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun BottomBar(tab: AppTab, onSelect: (AppTab) -> Unit) {
     Row(
         Modifier.fillMaxWidth().background(Ink).windowInsetsPadding(WindowInsets.navigationBars).padding(horizontal = 18.dp, vertical = 10.dp),
@@ -512,102 +745,48 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedPlaceholderColor = Muted
 )
 
-private fun enqueueDirectDownload(context: Context, prefs: android.content.SharedPreferences, raw: String): String {
-    val uri = runCatching { Uri.parse(raw.trim()) }.getOrNull() ?: return "That link is not valid."
-    if (uri.scheme !in setOf("https", "http") || uri.host.isNullOrBlank()) {
-        return "Use a direct http or https media file URL. Protected platform streams are not supported."
-    }
-    return runCatching {
-        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val guessed = uri.lastPathSegment?.let { URLDecoder.decode(it, "UTF-8") }
-            ?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "rantube-media"
-        val filename = guessed.replace(Regex("[^A-Za-z0-9._-]"), "_").take(100).ifBlank { "rantube-media" }
-        val request = DownloadManager.Request(uri)
-            .setTitle(filename)
-            .setDescription("Saved by Rantube")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Rantube/$filename")
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(false)
-        val id = manager.enqueue(request)
-        val current = prefs.getStringSet("download_ids", emptySet()).orEmpty().toMutableSet()
-        current.add(id.toString())
-        prefs.edit().putStringSet("download_ids", current).apply()
-        "Download added to the system queue."
-    }.getOrElse { "Couldn’t add this link: ${it.message ?: "download manager unavailable"}" }
+private fun updateDownload(
+    downloads: MutableList<DownloadEntry>,
+    id: String,
+    transform: (DownloadEntry) -> DownloadEntry
+) {
+    val index = downloads.indexOfFirst { it.id == id }
+    if (index >= 0) downloads[index] = transform(downloads[index])
 }
 
-private fun refreshDownloads(context: Context, prefs: android.content.SharedPreferences, output: MutableList<DownloadEntry>) {
-    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    val records = prefs.getStringSet("download_ids", emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }
-    val current = records.mapNotNull { id ->
-        var cursor: Cursor? = null
-        try {
-            cursor = manager.query(DownloadManager.Query().setFilterById(id))
-            if (cursor == null || !cursor.moveToFirst()) return@mapNotNull null
-        val title = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TITLE)) ?: "Media download"
-        val statusCode = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-            val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            val soFar = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-        val mimeType = manager.getMimeTypeForDownloadedFile(id)?.substringBefore(';')?.trim()
-        val reason = if (statusCode == DownloadManager.STATUS_FAILED || statusCode == DownloadManager.STATUS_PAUSED) {
-            cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-        } else 0
-        val isHtml = mimeType.equals("text/html", ignoreCase = true) || mimeType.equals("application/xhtml+xml", ignoreCase = true)
-        val status = when {
-            statusCode == DownloadManager.STATUS_SUCCESSFUL && isHtml -> "Link page, not a media file"
-            statusCode == DownloadManager.STATUS_PENDING -> "Waiting"
-            statusCode == DownloadManager.STATUS_RUNNING -> "Downloading"
-            statusCode == DownloadManager.STATUS_PAUSED -> "Paused"
-            statusCode == DownloadManager.STATUS_SUCCESSFUL -> "Complete"
-            statusCode == DownloadManager.STATUS_FAILED -> "Failed"
-            else -> "Queued"
-        }
-        val failureReason = when (reason) {
-            DownloadManager.ERROR_INSUFFICIENT_SPACE -> "There isn’t enough storage space."
-            DownloadManager.ERROR_DEVICE_NOT_FOUND -> "The download folder is unavailable."
-            DownloadManager.ERROR_CANNOT_RESUME -> "The server interrupted the download; try again."
-            DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "A file with this name already exists."
-            DownloadManager.ERROR_HTTP_DATA_ERROR -> "The server returned invalid data. Check that this is a direct media-file URL."
-            DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "The server rejected the link or requires access in a browser."
-            DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "Waiting for a network connection."
-            DownloadManager.PAUSED_WAITING_TO_RETRY -> "The connection dropped; Android will retry."
-            DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "Waiting for Wi-Fi."
-            DownloadManager.PAUSED_UNKNOWN -> "Android paused this download."
-            else -> when {
-                statusCode == DownloadManager.STATUS_FAILED -> "Download failed (code $reason). Check the link and available storage."
-                isHtml -> "This link downloaded a web page instead of a video file. Rantube needs a direct media-file link."
-                else -> null
-            }
-        }
-        DownloadEntry(id, title, status, if (total > 0) ((soFar * 100) / total).toInt().coerceIn(0, 100) else -1, mimeType, failureReason)
-        } catch (_: Exception) {
-            null
-        } finally {
-            cursor?.close()
-        }
-    }
-    output.clear()
-    output.addAll(current)
-}
+private fun downloadDirectory(): File = File(
+    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+    "Rantube"
+)
 
-private fun openDownloadedFile(context: Context, id: Long): String? {
-    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    val uri = manager.getUriForDownloadedFile(id) ?: return "Android can’t find the downloaded file. Check Downloads/Rantube in the Files app."
-    val mimeType = manager.getMimeTypeForDownloadedFile(id) ?: "*/*"
+private fun scanDownloadedFiles(): List<DownloadEntry> = downloadDirectory().listFiles()
+    ?.filter {
+        it.isFile && it.length() > 0 && it.extension.lowercase() in
+            setOf("mp4", "m4v", "webm", "mkv", "mov", "avi", "mp3", "m4a", "aac", "opus", "ogg", "wav", "flac")
+    }
+    ?.sortedByDescending { it.lastModified() }
+    ?.map { file -> DownloadEntry(file.absolutePath, file.nameWithoutExtension, "Complete", 100, file.absolutePath) }
+    .orEmpty()
+
+private fun openDownloadedFile(context: Context, file: File): String? {
+    if (!file.isFile) return "Rantube can’t find that saved file. Look in Downloads/Rantube in the Files app."
+    val uri = runCatching { FileProvider.getUriForFile(context, "${context.packageName}.provider", file) }.getOrNull()
+        ?: return "Rantube couldn’t create a safe file link."
+    val mimeType = context.contentResolver.getType(uri) ?: "video/*"
     return runCatching {
         context.startActivity(
             Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         )
         null
-    }.getOrElse { "No app on this device can open this file. Check Downloads/Rantube in the Files app." }
+    }.getOrElse { "No app on this device can open this media file. Check Downloads/Rantube in the Files app." }
 }
 
-private fun shareDownloadedFile(context: Context, id: Long): String? {
-    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    val uri = manager.getUriForDownloadedFile(id) ?: return "Android can’t find the downloaded file to share."
-    val mimeType = manager.getMimeTypeForDownloadedFile(id) ?: "*/*"
+private fun shareDownloadedFile(context: Context, file: File): String? {
+    if (!file.isFile) return "Rantube can’t find that saved file to share."
+    val uri = runCatching { FileProvider.getUriForFile(context, "${context.packageName}.provider", file) }.getOrNull()
+        ?: return "Rantube couldn’t create a safe file link to share."
+    val mimeType = context.contentResolver.getType(uri) ?: "video/*"
     return runCatching {
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
@@ -637,4 +816,3 @@ private fun Context.displayName(uri: Uri): String {
     }
     return uri.lastPathSegment?.substringAfterLast('/') ?: "Selected media"
 }
-

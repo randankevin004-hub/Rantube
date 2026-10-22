@@ -11,12 +11,23 @@ android {
         applicationId = "com.rantube.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
+        ndk {
+            abiFilters += if (providers.gradleProperty("phoneOnly").orNull == "true") {
+                listOf("arm64-v8a")
+            } else {
+                listOf("arm64-v8a", "x86_64")
+            }
+        }
     }
 
     buildFeatures {
         compose = true
+    }
+
+    packaging {
+        jniLibs.useLegacyPackaging = true
     }
 }
 
@@ -24,6 +35,7 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)
     implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -31,5 +43,8 @@ dependencies {
 
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-ui:1.11.1")
-}
 
+    // GPL-3.0: yt-dlp runtime for page extraction, format selection and downloads.
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
+}
