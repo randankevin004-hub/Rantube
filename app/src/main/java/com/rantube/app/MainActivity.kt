@@ -174,6 +174,8 @@ private fun RantubeApp() {
                                 tab = AppTab.Downloads
                             }
                         },
+                        onShareWebsite = { shareText(context, "Share Rantube", "Try Rantube: https://randankevin004-hub.github.io/Rantube/") },
+                        onShareRepository = { shareText(context, "Share Rantube source", "Rantube source code: https://github.com/randankevin004-hub/Rantube") },
                         onLibrary = { tab = AppTab.Library },
                         onDownloads = { tab = AppTab.Downloads }
                     )
@@ -181,6 +183,9 @@ private fun RantubeApp() {
                         downloads = downloads,
                         onOpen = { item ->
                             openDownloadedFile(context, item.id)?.let { message = it }
+                        },
+                        onShare = { item ->
+                            shareDownloadedFile(context, item.id)?.let { message = it }
                         }
                     )
                     else -> LibraryScreen(
@@ -216,6 +221,8 @@ private fun HomeScreen(
     onLinkTextChange: (String) -> Unit,
     onPaste: () -> Unit,
     onDownload: () -> Unit,
+    onShareWebsite: () -> Unit,
+    onShareRepository: () -> Unit,
     onImport: () -> Unit,
     onLibrary: () -> Unit,
     onDownloads: () -> Unit
@@ -275,6 +282,10 @@ private fun HomeScreen(
             Text("Direct file links keep their source quality. Rantube doesn’t extract protected streams.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
             Spacer(Modifier.height(4.dp))
             TextButton(onClick = onImport) { Text("＋  Choose files from this device", color = Mint) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onShareWebsite) { Text("Share website", color = Mint) }
+                TextButton(onClick = onShareRepository) { Text("Share source", color = Mint) }
+            }
         }
         item {
             Text("YOUR SPACE", color = Muted, fontSize = 11.sp, letterSpacing = 1.7.sp, fontWeight = FontWeight.Bold)
@@ -317,7 +328,11 @@ private fun FeatureCard(mark: String, title: String, subtitle: String, onClick: 
 }
 
 @Composable
-private fun DownloadsScreen(downloads: List<DownloadEntry>, onOpen: (DownloadEntry) -> Unit) {
+private fun DownloadsScreen(
+    downloads: List<DownloadEntry>,
+    onOpen: (DownloadEntry) -> Unit,
+    onShare: (DownloadEntry) -> Unit
+) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         ScreenHeading("Downloads", "Files are saved in Downloads/Rantube")
         if (downloads.isEmpty()) EmptyState("Nothing in the queue yet", "Paste a direct media URL from Home to add a download.")
@@ -365,7 +380,10 @@ private fun DownloadsScreen(downloads: List<DownloadEntry>, onOpen: (DownloadEnt
                                 trackColor = Color(0xFF35434D)
                             )
                             Spacer(Modifier.height(4.dp))
-                            TextButton(onClick = { onOpen(item) }) { Text("Open downloaded file", color = Mint) }
+                            Row {
+                                TextButton(onClick = { onOpen(item) }) { Text("Open", color = Mint) }
+                                TextButton(onClick = { onShare(item) }) { Text("Share file", color = Mint) }
+                            }
                         }
                     }
                 }
@@ -584,6 +602,30 @@ private fun openDownloadedFile(context: Context, id: Long): String? {
         )
         null
     }.getOrElse { "No app on this device can open this file. Check Downloads/Rantube in the Files app." }
+}
+
+private fun shareDownloadedFile(context: Context, id: Long): String? {
+    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+    val uri = manager.getUriForDownloadedFile(id) ?: return "Android can’t find the downloaded file to share."
+    val mimeType = manager.getMimeTypeForDownloadedFile(id) ?: "*/*"
+    return runCatching {
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = android.content.ClipData.newUri(context.contentResolver, "Rantube media", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(sendIntent, "Share downloaded media"))
+        null
+    }.getOrElse { "Couldn’t open the share menu for this file." }
+}
+
+private fun shareText(context: Context, title: String, text: String) {
+    val sendIntent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(sendIntent, title))
 }
 
 private fun Context.displayName(uri: Uri): String {
