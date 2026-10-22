@@ -1,11 +1,14 @@
 package com.rantube.app
 
 import android.content.Context
+import android.content.ContentValues
 import android.content.Intent
 import android.content.ClipboardManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.os.Build
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.media.MediaScannerConnection
 import android.view.ViewGroup
@@ -155,7 +158,7 @@ private fun RantubeApp() {
             if (parts.size == 2) add(MediaEntry(parts[0], parts[1]))
         }
     } }
-    val downloads = remember { mutableStateListOf<DownloadEntry>().apply { addAll(scanDownloadedFiles()) } }
+    val downloads = remember { mutableStateListOf<DownloadEntry>().apply { addAll(scanDownloadedFiles(context)) } }
     val vaultItems = remember { mutableStateListOf<VaultEntry>().apply { addAll(readVaultItems(prefs)) } }
     var engineReady by remember { mutableStateOf(false) }
     var engineError by remember { mutableStateOf<String?>(null) }
@@ -277,7 +280,7 @@ private fun RantubeApp() {
             showFormatChooser = true
             return
         }
-        val folder = downloadDirectory()
+        val folder = downloadDirectory(context)
         val safeName = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(120).ifBlank { "Rantube media" }
         val outputTemplate = File(folder, "$safeName [%(id)s].%(ext)s").absolutePath
         downloads.add(0, DownloadEntry(downloadId, title, "Starting", -1, null))
@@ -316,12 +319,16 @@ private fun RantubeApp() {
                     ?.filter { it.isFile && it.name.startsWith("$safeName [") }
                     ?.maxByOrNull { it.lastModified() }
                 if (downloaded != null && downloaded.length() > 0) {
-                    withContext(Dispatchers.IO) {
-                        MediaScannerConnection.scanFile(context, arrayOf(downloaded.absolutePath), arrayOf(mimeTypeFor(downloaded)), null)
-                    }
-                    updateDownload(downloads, downloadId) {
-                        it.copy(status = "Complete", progress = 100, filePath = downloaded.absolutePath)
-                    }
+                    runCatching { withContext(Dispatchers.IO) { publishDownloadedFile(context, downloaded) } }
+                        .onSuccess { savedUri ->
+                            downloaded.delete()
+                            updateDownload(downloads, downloadId) {
+                                it.copy(status = "Complete", progress = 100, filePath = savedUri.toString())
+                            }
+                        }
+                        .onFailure {
+                            updateDownload(downloads, downloadId) { it.copy(status = "Failed", failureReason = "Rantube couldn't save the file to Downloads/Rantube. Please check your free storage and try again.") }
+                        }
                 } else {
                     updateDownload(downloads, downloadId) {
                     it.copy(status = "Failed", failureReason = "Rantube finished, but couldn't find the saved file. Check Downloads/Rantube in the Files app.")
@@ -431,22 +438,22 @@ private fun RantubeApp() {
                     tab == AppTab.Downloads -> DownloadsScreen(
                         downloads = downloads,
                         onOpen = { item ->
-                            item.filePath?.let { openDownloadedFile(context, File(it)) }?.let { message = it }
+                            item.filePath?.let { openDownloadedFile(context, it) }?.let { message = it }
                         },
                         onShare = { item ->
-                            item.filePath?.let { shareDownloadedFile(context, File(it)) }?.let { message = it }
+                            item.filePath?.let { shareDownloadedFile(context, it) }?.let { message = it }
                         },
                         onMoveToVault = { item ->
-                            val source = item.filePath?.let(::File)
+                            val source = item.filePath
                             if (!prefs.contains("vault_pin_hash")) { tab = AppTab.Vault; message = "Create your vault PIN first, then move downloads into it." }
-                            else if (source == null || !source.isFile) message = "Rantube couldn't find that saved file."
+                            else if (source == null) message = "Rantube couldn't find that saved file."
                             else {
                                 scope.launch {
                                     runCatching {
                                         withContext(Dispatchers.IO) { moveToVault(context, prefs, source, item.title) }
                                     }.onSuccess { saved ->
                                         vaultItems.add(0, saved)
-                                        downloads.removeAll { it.filePath == source.absolutePath }
+                                        downloads.removeAll { it.filePath == source }
                                         message = "Moved to your locked vault. The public download copy was removed."
                                     }.onFailure { message = "Rantube couldn't move that file into the vault. Please try again." }
                                 }
@@ -1165,10 +1172,16 @@ private fun vaultKey(): SecretKey {
     return generator.generateKey()
 }
 
-private fun moveToVault(context: Context, prefs: android.content.SharedPreferences, source: File, title: String): VaultEntry {
+private fun moveToVault(context: Context, prefs: android.content.SharedPreferences, source: String, title: String): VaultEntry {
     val id = UUID.randomUUID().toString()
-    val extension = source.extension.lowercase().ifBlank { "mp4" }
-    val mime = mimeTypeFor(source)
+    val uri = Uri.parse(source)
+    val displayName = if (uri.scheme == "content") {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    } else File(source).name
+    val extension = displayName?.substringAfterLast('.', "mp4")?.lowercase()?.ifBlank { "mp4" } ?: "mp4"
+    val mime = context.contentResolver.getType(uri) ?: mimeTypeFor(File("media.$extension"))
     val entry = VaultEntry(id, title, mime, extension)
     val directory = File(context.filesDir, "vault").apply { mkdirs() }
     val encrypted = File(directory, "$id.rtv")
@@ -1176,7 +1189,10 @@ private fun moveToVault(context: Context, prefs: android.content.SharedPreferenc
     DataOutputStream(FileOutputStream(encrypted)).use { output ->
         output.writeInt(cipher.iv.size)
         output.write(cipher.iv)
-        CipherOutputStream(output, cipher).use { cipherOutput -> FileInputStream(source).use { it.copyTo(cipherOutput) } }
+        CipherOutputStream(output, cipher).use { cipherOutput ->
+            val input = if (uri.scheme == "content") context.contentResolver.openInputStream(uri) else FileInputStream(File(source))
+            (input ?: error("Source file is missing")).use { it.copyTo(cipherOutput) }
+        }
     }
     if (!encrypted.isFile || encrypted.length() <= 16) {
         encrypted.delete()
@@ -1185,13 +1201,13 @@ private fun moveToVault(context: Context, prefs: android.content.SharedPreferenc
     val rows = prefs.getStringSet("vault_items", emptySet()).orEmpty().toMutableSet()
     rows.add(encodeVaultEntry(entry))
     prefs.edit().putStringSet("vault_items", rows).apply()
-    if (!source.delete()) {
+    val deleted = if (uri.scheme == "content") context.contentResolver.delete(uri, null, null) > 0 else File(source).delete()
+    if (!deleted) {
         encrypted.delete()
         rows.remove(encodeVaultEntry(entry))
         prefs.edit().putStringSet("vault_items", rows).apply()
         error("Could not remove the public file")
     }
-    MediaScannerConnection.scanFile(context, arrayOf(source.absolutePath), arrayOf(mime), null)
     return entry
 }
 
@@ -1306,25 +1322,70 @@ private fun updateDownload(
     if (index >= 0) downloads[index] = transform(downloads[index])
 }
 
-private fun downloadDirectory(): File = File(
-    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-    "Rantube"
+private fun downloadDirectory(context: Context): File = File(
+    context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
+    "RantubeTemp"
 )
 
-private fun scanDownloadedFiles(): List<DownloadEntry> = downloadDirectory().listFiles()
-    ?.filter {
-        it.isFile && it.length() > 0 && it.extension.lowercase() in
-            setOf("mp4", "m4v", "webm", "mkv", "mov", "avi", "mp3", "m4a", "aac", "opus", "ogg", "wav", "flac")
+private fun publishDownloadedFile(context: Context, source: File): Uri {
+    require(source.isFile && source.length() > 0) { "Downloaded file is empty" }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, source.name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeTypeFor(source))
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Rantube")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val uri = context.contentResolver.insert(collection, values) ?: error("Could not create the saved file")
+        try {
+            context.contentResolver.openOutputStream(uri, "w")?.use { output -> FileInputStream(source).use { it.copyTo(output) } }
+                ?: error("Could not write the saved file")
+            val completed = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            context.contentResolver.update(uri, completed, null, null)
+            return uri
+        } catch (error: Throwable) {
+            context.contentResolver.delete(uri, null, null)
+            throw error
+        }
     }
-    ?.sortedByDescending { it.lastModified() }
-    ?.map { file -> DownloadEntry(file.absolutePath, file.nameWithoutExtension, "Complete", 100, file.absolutePath) }
-    .orEmpty()
+    val destination = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Rantube/${source.name}")
+    destination.parentFile?.mkdirs()
+    FileInputStream(source).use { input -> FileOutputStream(destination).use(input::copyTo) }
+    MediaScannerConnection.scanFile(context, arrayOf(destination.absolutePath), arrayOf(mimeTypeFor(destination)), null)
+    return Uri.fromFile(destination)
+}
 
-private fun openDownloadedFile(context: Context, file: File): String? {
-    if (!file.isFile) return "Rantube can’t find that saved file. Look in Downloads/Rantube in the Files app."
-    val uri = runCatching { FileProvider.getUriForFile(context, "${context.packageName}.provider", file) }.getOrNull()
-        ?: return "Rantube couldn’t create a safe file link."
-    val mimeType = context.contentResolver.getType(uri) ?: "video/*"
+private fun scanDownloadedFiles(context: Context): List<DownloadEntry> {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME)
+        val selection = "${MediaStore.MediaColumns.RELATIVE_PATH}=? AND ${MediaStore.MediaColumns.IS_PENDING}=0"
+        return runCatching {
+            context.contentResolver.query(collection, projection, selection, arrayOf("${Environment.DIRECTORY_DOWNLOADS}/Rantube/"), "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { cursor ->
+                buildList {
+                    val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val nameIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                    while (cursor.moveToNext()) {
+                        val uri = Uri.withAppendedPath(collection, cursor.getLong(idIndex).toString())
+                        val name = cursor.getString(nameIndex).orEmpty()
+                        add(DownloadEntry(uri.toString(), File(name).nameWithoutExtension, "Complete", 100, uri.toString()))
+                    }
+                }
+            }.orEmpty()
+        }.getOrDefault(emptyList())
+    }
+    return emptyList()
+}
+
+private fun parseSavedUri(context: Context, saved: String): Uri? = runCatching {
+    val parsed = Uri.parse(saved)
+    if (parsed.scheme == "content") parsed else FileProvider.getUriForFile(context, "${context.packageName}.provider", File(saved))
+}.getOrNull()
+
+private fun openDownloadedFile(context: Context, saved: String): String? {
+    val uri = parseSavedUri(context, saved) ?: return "Rantube can’t find that saved file. Look in Downloads/Rantube in the Files app."
+    val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
     return runCatching {
         context.startActivity(
             Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType)
@@ -1334,11 +1395,9 @@ private fun openDownloadedFile(context: Context, file: File): String? {
     }.getOrElse { "No app on this device can open this media file. Check Downloads/Rantube in the Files app." }
 }
 
-private fun shareDownloadedFile(context: Context, file: File): String? {
-    if (!file.isFile) return "Rantube can’t find that saved file to share."
-    val uri = runCatching { FileProvider.getUriForFile(context, "${context.packageName}.provider", file) }.getOrNull()
-        ?: return "Rantube couldn’t create a safe file link to share."
-    val mimeType = context.contentResolver.getType(uri) ?: "video/*"
+private fun shareDownloadedFile(context: Context, saved: String): String? {
+    val uri = parseSavedUri(context, saved) ?: return "Rantube can’t find that saved file to share."
+    val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
     return runCatching {
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
