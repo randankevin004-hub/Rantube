@@ -16,7 +16,7 @@ Rantube is an original Android media app inspired by the broad feature areas obs
 - Share completed media files and Rantube links through Android's system share sheet.
 - Search over imported media.
 - Dark, high-contrast UI with mint accents and a compact bottom navigation.
-- Branded startup screen while the bundled download engine initializes.
+- Branded startup screen while Rantube gets ready.
 
 Rantube uses yt-dlp for media pages and direct file links. It checks for a stable yt-dlp update once a week and continues with the bundled version if that check fails. Whether a download works depends on the page being public and supported; some sites may require sign-in, change their pages, or block downloads. Rantube does not bypass DRM or access controls. Only save media you have permission to download.
 
