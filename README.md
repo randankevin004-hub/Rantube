@@ -4,8 +4,11 @@ Rantube is an original Android media app inspired by the broad feature areas obs
 
 ## Current implementation
 
-- Home screen with a rounded, clipboard-pasteable media link field.
-- yt-dlp powered page inspection that discovers available resolutions and offers best quality, available height limits, and audio-only MP3.
+- Simple search bar that searches the web or opens a pasted website link.
+- Built-in browser with YouTube, Instagram, TikTok, Facebook, and Reddit shortcuts.
+- Optional private shortcuts that stay hidden until the user chooses to show them.
+- Download choices appear only after the user taps Download; no quality is selected in advance.
+- Audio-only MP3 and available video resolutions, with plain-language labels.
 - FFmpeg-assisted merging when a service provides video and audio as separate streams.
 - Device media library populated only through Android's document picker.
 - In-app audio/video playback with Media3.
@@ -15,7 +18,7 @@ Rantube is an original Android media app inspired by the broad feature areas obs
 - Dark, high-contrast UI with mint accents and a compact bottom navigation.
 - Branded startup screen while the bundled download engine initializes.
 
-Rantube uses yt-dlp for media pages and direct file links. It checks for a stable yt-dlp update once a week and continues with the bundled version if that check fails. Whether an extractor succeeds depends on the page being public and supported by yt-dlp; some services may require sign-in, change their pages, or block downloads. Rantube does not bypass DRM or access controls. Only save media you have permission to download.
+Rantube uses yt-dlp for media pages and direct file links. It checks for a stable yt-dlp update once a week and continues with the bundled version if that check fails. Whether a download works depends on the page being public and supported; some sites may require sign-in, change their pages, or block downloads. Rantube does not bypass DRM or access controls. Only save media you have permission to download.
 
 The yt-dlp Android wrapper and its FFmpeg runtime are GPL-3.0, so Rantube is distributed under GPL-3.0-only. See [LICENSE](LICENSE) and the bundled third-party notices in `app/src/main/assets/`.
 
