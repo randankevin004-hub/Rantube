@@ -107,6 +107,8 @@ import javax.crypto.spec.PBEKeySpec
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 
 private val Ink = Color(0xFF101923)
@@ -131,6 +133,7 @@ private data class DownloadEntry(
 )
 private data class DownloadFormat(val label: String, val selector: String, val audioOnly: Boolean = false, val sizeBytes: Long? = null)
 private data class VaultEntry(val id: String, val title: String, val mimeType: String, val extension: String)
+private data class PageVideo(val title: String, val url: String)
 private data class SiteShortcut(val name: String, val url: String, val private: Boolean = false)
 
 class MainActivity : ComponentActivity() {
@@ -772,6 +775,8 @@ private fun BrowserScreen(
 ) {
     val context = LocalContext.current
     var view by remember { mutableStateOf<WebView?>(null) }
+    var pageVideos by remember { mutableStateOf<List<PageVideo>>(emptyList()) }
+    var showPageVideos by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             TextButton(onClick = onHome) { Text("⌂", color = Mint, fontSize = 20.sp) }
@@ -802,7 +807,19 @@ private fun BrowserScreen(
                     settings.mediaPlaybackRequiresUserGesture = true
                     webViewClient = object : WebViewClient() {
                         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = false
-                        override fun onPageFinished(view: WebView, url: String) { onAddressChange(url) }
+                        override fun onPageFinished(view: WebView, url: String) {
+                            onAddressChange(url)
+                            val script = """(()=>JSON.stringify(Array.from(document.querySelectorAll('a[href]')).map(a=>({url:a.href,title:(a.innerText||a.getAttribute('title')||'Video').trim().replace(/\s+/g,' ')})).filter(x=>/(youtube\.com\/(watch|shorts)|youtu\.be\/|instagram\.com\/(reel|p)\/|tiktok\.com\/@[^/]+\/video\/)/i.test(x.url)).filter((x,i,all)=>all.findIndex(y=>y.url===x.url)===i).slice(0,12)))()"""
+                            view.evaluateJavascript(script) { raw ->
+                                runCatching {
+                                    val encoded = JSONObject("{\"value\":$raw}").getString("value")
+                                    val array = JSONArray(encoded)
+                                    (0 until array.length()).map { i -> array.getJSONObject(i) }
+                                        .map { PageVideo(it.optString("title", "Video"), it.optString("url")) }
+                                        .filter { it.url.isNotBlank() }
+                                }.onSuccess { pageVideos = it; showPageVideos = false }
+                            }
+                        }
                     }
                     webChromeClient = WebChromeClient()
                     view = this
@@ -823,6 +840,17 @@ private fun BrowserScreen(
             shape = RoundedCornerShape(25.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink)
         ) { Text("↓  Download this video", fontWeight = FontWeight.Bold) }
+        if (pageVideos.isNotEmpty()) {
+            TextButton(onClick = { showPageVideos = !showPageVideos }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (showPageVideos) "Hide videos found (${pageVideos.size})" else "Show videos found (${pageVideos.size})", color = Mint)
+            }
+            if (showPageVideos) pageVideos.take(5).forEach { video ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(video.title, color = Color.White, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { onDownload(video.url) }) { Text("↓", color = Mint, fontSize = 20.sp) }
+                }
+            }
+        }
     }
     LaunchedEffect(startUrl, view) {
         if (view != null && view?.url != startUrl) view?.loadUrl(startUrl)
