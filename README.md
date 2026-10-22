@@ -4,7 +4,7 @@ Rantube is an original Android media app inspired by the broad feature areas obs
 
 ## Current implementation
 
-- Home screen with a direct-link entry point and file import.
+- Home screen with an inline, clipboard-pasteable direct media URL field, original-quality downloads, and file import.
 - Device media library populated only through Android's document picker.
 - In-app audio/video playback with Media3.
 - Direct HTTP(S) file downloads through Android DownloadManager, with a persisted queue and progress/status view.
