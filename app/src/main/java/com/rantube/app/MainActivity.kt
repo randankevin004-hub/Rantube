@@ -41,6 +41,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -84,7 +85,14 @@ private enum class AppTab(val label: String, val mark: String) {
 }
 
 private data class MediaEntry(val uri: String, val title: String)
-private data class DownloadEntry(val id: Long, val title: String, val status: String, val progress: Int)
+private data class DownloadEntry(
+    val id: Long,
+    val title: String,
+    val status: String,
+    val progress: Int,
+    val mimeType: String?,
+    val failureReason: String?
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -169,7 +177,12 @@ private fun RantubeApp() {
                         onLibrary = { tab = AppTab.Library },
                         onDownloads = { tab = AppTab.Downloads }
                     )
-                    tab == AppTab.Downloads -> DownloadsScreen(downloads = downloads)
+                    tab == AppTab.Downloads -> DownloadsScreen(
+                        downloads = downloads,
+                        onOpen = { item ->
+                            openDownloadedFile(context, item.id)?.let { message = it }
+                        }
+                    )
                     else -> LibraryScreen(
                         items = library,
                         search = search,
@@ -246,6 +259,7 @@ private fun HomeScreen(
                 trailingIcon = { TextButton(onClick = onPaste) { Text("Paste", color = Mint) } },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                shape = RoundedCornerShape(22.dp),
                 colors = fieldColors()
             )
             Spacer(Modifier.height(10.dp))
@@ -303,9 +317,9 @@ private fun FeatureCard(mark: String, title: String, subtitle: String, onClick: 
 }
 
 @Composable
-private fun DownloadsScreen(downloads: List<DownloadEntry>) {
+private fun DownloadsScreen(downloads: List<DownloadEntry>, onOpen: (DownloadEntry) -> Unit) {
     Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
-        ScreenHeading("Downloads", "Direct links saved on this device")
+        ScreenHeading("Downloads", "Files are saved in Downloads/Rantube")
         if (downloads.isEmpty()) EmptyState("Nothing in the queue yet", "Paste a direct media URL from Home to add a download.")
         else LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(downloads, key = { it.id }) { item ->
@@ -313,7 +327,46 @@ private fun DownloadsScreen(downloads: List<DownloadEntry>) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Text(item.title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(6.dp))
-                        Text(if (item.progress in 0..99) "${item.status} · ${item.progress}%" else item.status, color = Muted, fontSize = 13.sp)
+                        Text(
+                            buildString {
+                                append(item.status)
+                                if (item.progress in 0..99) append(" · ${item.progress}%")
+                                item.mimeType?.let { append(" · $it") }
+                            },
+                            color = if (item.status.startsWith("Failed") || item.status.startsWith("Link page")) Color(0xFFFFA6A6) else Muted,
+                            fontSize = 13.sp
+                        )
+                        if (item.failureReason != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(item.failureReason, color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+                        }
+                        if (item.status == "Waiting" || item.status == "Downloading" || item.status == "Paused") {
+                            Spacer(Modifier.height(10.dp))
+                            if (item.progress >= 0) {
+                                LinearProgressIndicator(
+                                    progress = { (item.progress / 100f).coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Mint,
+                                    trackColor = Color(0xFF35434D)
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Mint,
+                                    trackColor = Color(0xFF35434D)
+                                )
+                            }
+                        } else if (item.status == "Complete") {
+                            Spacer(Modifier.height(10.dp))
+                            LinearProgressIndicator(
+                                progress = { 1f },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Mint,
+                                trackColor = Color(0xFF35434D)
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            TextButton(onClick = { onOpen(item) }) { Text("Open downloaded file", color = Mint) }
+                        }
                     }
                 }
             }
@@ -474,19 +527,42 @@ private fun refreshDownloads(context: Context, prefs: android.content.SharedPref
         try {
             cursor = manager.query(DownloadManager.Query().setFilterById(id))
             if (cursor == null || !cursor.moveToFirst()) return@mapNotNull null
-            val title = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TITLE)) ?: "Media download"
-            val statusCode = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+        val title = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TITLE)) ?: "Media download"
+        val statusCode = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
             val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
             val soFar = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-            val status = when (statusCode) {
-                DownloadManager.STATUS_PENDING -> "Waiting"
-                DownloadManager.STATUS_RUNNING -> "Downloading"
-                DownloadManager.STATUS_PAUSED -> "Paused"
-                DownloadManager.STATUS_SUCCESSFUL -> "Complete"
-                DownloadManager.STATUS_FAILED -> "Failed"
-                else -> "Queued"
+        val mimeType = manager.getMimeTypeForDownloadedFile(id)?.substringBefore(';')?.trim()
+        val reason = if (statusCode == DownloadManager.STATUS_FAILED || statusCode == DownloadManager.STATUS_PAUSED) {
+            cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+        } else 0
+        val isHtml = mimeType.equals("text/html", ignoreCase = true) || mimeType.equals("application/xhtml+xml", ignoreCase = true)
+        val status = when {
+            statusCode == DownloadManager.STATUS_SUCCESSFUL && isHtml -> "Link page, not a media file"
+            statusCode == DownloadManager.STATUS_PENDING -> "Waiting"
+            statusCode == DownloadManager.STATUS_RUNNING -> "Downloading"
+            statusCode == DownloadManager.STATUS_PAUSED -> "Paused"
+            statusCode == DownloadManager.STATUS_SUCCESSFUL -> "Complete"
+            statusCode == DownloadManager.STATUS_FAILED -> "Failed"
+            else -> "Queued"
+        }
+        val failureReason = when (reason) {
+            DownloadManager.ERROR_INSUFFICIENT_SPACE -> "There isn’t enough storage space."
+            DownloadManager.ERROR_DEVICE_NOT_FOUND -> "The download folder is unavailable."
+            DownloadManager.ERROR_CANNOT_RESUME -> "The server interrupted the download; try again."
+            DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "A file with this name already exists."
+            DownloadManager.ERROR_HTTP_DATA_ERROR -> "The server returned invalid data. Check that this is a direct media-file URL."
+            DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "The server rejected the link or requires access in a browser."
+            DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "Waiting for a network connection."
+            DownloadManager.PAUSED_WAITING_TO_RETRY -> "The connection dropped; Android will retry."
+            DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "Waiting for Wi-Fi."
+            DownloadManager.PAUSED_UNKNOWN -> "Android paused this download."
+            else -> when {
+                statusCode == DownloadManager.STATUS_FAILED -> "Download failed (code $reason). Check the link and available storage."
+                isHtml -> "This link downloaded a web page instead of a video file. Rantube needs a direct media-file link."
+                else -> null
             }
-            DownloadEntry(id, title, status, if (total > 0) ((soFar * 100) / total).toInt() else -1)
+        }
+        DownloadEntry(id, title, status, if (total > 0) ((soFar * 100) / total).toInt().coerceIn(0, 100) else -1, mimeType, failureReason)
         } catch (_: Exception) {
             null
         } finally {
@@ -495,6 +571,19 @@ private fun refreshDownloads(context: Context, prefs: android.content.SharedPref
     }
     output.clear()
     output.addAll(current)
+}
+
+private fun openDownloadedFile(context: Context, id: Long): String? {
+    val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+    val uri = manager.getUriForDownloadedFile(id) ?: return "Android can’t find the downloaded file. Check Downloads/Rantube in the Files app."
+    val mimeType = manager.getMimeTypeForDownloadedFile(id) ?: "*/*"
+    return runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        null
+    }.getOrElse { "No app on this device can open this file. Check Downloads/Rantube in the Files app." }
 }
 
 private fun Context.displayName(uri: Uri): String {
