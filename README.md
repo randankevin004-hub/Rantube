@@ -6,13 +6,15 @@ Rantube is an original Android media app inspired by the broad feature areas obs
 
 - Simple search bar that searches the web or opens a pasted website link.
 - Built-in browser with YouTube, Instagram, TikTok, Facebook, and Reddit shortcuts.
+- Recognizable site logos on the quick links, and a download button below the open page.
 - Optional private shortcuts that stay hidden until the user chooses to show them.
-- Download choices appear only after the user taps Download; no quality is selected in advance.
-- Audio-only MP3 and available video resolutions, with plain-language labels.
+- Pasted links open in the browser first; tap Download on the page to see available formats.
+- A short list of audio/video choices with estimated file sizes, plus a Show all formats option.
 - FFmpeg-assisted merging when a service provides video and audio as separate streams.
 - Device media library populated only through Android's document picker.
 - In-app audio/video playback with Media3.
-- Live download progress, failure details, completed-file open/share actions, and saved output in `Downloads/Rantube`.
+- Live download progress, failure details, completed-file open/share actions, and saved output in `Downloads/Rantube`, indexed for Gallery apps.
+- PIN-protected encrypted vault for completed downloads, with in-app playback.
 - Share completed media files and Rantube links through Android's system share sheet.
 - Search over imported media.
 - Dark, high-contrast UI with mint accents and a compact bottom navigation.
@@ -41,3 +43,4 @@ The responsive download page is in `site/`. The workflow at `.github/workflows/a
 After the first push, enable GitHub Pages for the repository using **Settings → Pages → Build and deployment → GitHub Actions** if GitHub has not enabled it automatically. The public download page URL will be `https://<account>.github.io/<repository>/`.
 
 The workflow produces a debug-signed APK for personal installation. Android will ask you to allow installs from the browser used to download it. Keep that in mind if you later switch to a separately signed production release; Android treats different signing keys as different app publishers.
+
